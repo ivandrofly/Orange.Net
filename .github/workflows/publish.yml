@@ -1,0 +1,56 @@
+name: Publish to NuGet
+
+# Publishes when a GitHub release is published (tag vX.Y.Z), or manually for an existing tag.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to publish (e.g. v0.1.0)'
+        required: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write   # Required for NuGet trusted publishing (OIDC)
+      contents: read
+
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      PROJECT: src/Orange.Net/Orange.Net.csproj
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Validate tag matches project version
+        run: |
+          PROJECT_VERSION=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' "$PROJECT")
+          if [ "v$PROJECT_VERSION" != "$TAG" ]; then
+            echo "::error::Tag ($TAG) doesn't match project version (v$PROJECT_VERSION)"
+            exit 1
+          fi
+
+      - name: Test
+        run: dotnet test -c Release
+
+      - name: Pack
+        run: dotnet pack "$PROJECT" -c Release -o ./artifacts
+
+      - name: NuGet login (OIDC)
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}   # nuget.org profile name, not email
+
+      - name: Push to NuGet
+        run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
